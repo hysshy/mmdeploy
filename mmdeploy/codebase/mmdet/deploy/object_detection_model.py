@@ -18,6 +18,36 @@ from mmdeploy.codebase.mmdet.deploy import get_post_processing_params
 from mmdeploy.utils import (Backend, get_backend, get_codebase_config,
                             get_partition_config, load_config)
 
+def kp_delta2bbox(rois,
+                  deltas,
+                  means=[0, 0],
+                  stds=[1, 1],
+                  max_shape=None,
+                  wh_ratio_clip=16 / 1000):
+    means = deltas.new_tensor(means).repeat(1, deltas.size(1) // 2)
+    stds = deltas.new_tensor(stds).repeat(1, deltas.size(1) // 2)
+    denorm_deltas = deltas * stds + means
+    dx = denorm_deltas[:, 0::2]
+    dy = denorm_deltas[:, 1::2]
+    # Compute center of each roi
+    px = ((rois[:, 0] + rois[:, 2]) * 0.5).unsqueeze(1).expand_as(dx)
+    py = ((rois[:, 1] + rois[:, 3]) * 0.5).unsqueeze(1).expand_as(dx)
+    # Compute width/height of each roi
+    pw = (rois[:, 2] - rois[:, 0] + 1.0).unsqueeze(1).expand_as(dx)
+    ph = (rois[:, 3] - rois[:, 1] + 1.0).unsqueeze(1).expand_as(dx)
+    # Use exp(network energy) to enlarge/shrink each roi
+
+    # Use network energy to shift the center of each roi
+    gx = torch.addcmul(px, 1, pw, dx)  # gx = px + pw * dx
+    gy = torch.addcmul(py, 1, ph, dy)  # gy = py + ph * dy
+    # Convert center-xy/width/height to top-left, bottom-right
+
+    if max_shape is not None:
+        x1 = gx.clamp(min=0, max=max_shape[1] - 1)
+        y1 = gy.clamp(min=0, max=max_shape[0] - 1)
+    bboxes = torch.stack([x1, y1], dim=-1).view_as(deltas)
+    return bboxes
+
 
 def __build_backend_model(partition_name: str, backend: Backend,
                           backend_files: Sequence[str], device: str,
@@ -197,68 +227,77 @@ class End2EndModel(BaseBackendModel):
         """
         input_img = img[0].contiguous()
         outputs = self.forward_test(input_img, img_metas, *args, **kwargs)
-        outputs = End2EndModel.__clear_outputs(outputs)
-        batch_dets, batch_labels = outputs[:2]
-        batch_masks = outputs[2] if len(outputs) == 3 else None
-        batch_size = input_img.shape[0]
+        # outputs = End2EndModel.__clear_outputs(outputs)
+        batch_dets, batch_labels, batch_kps, batch_zitais, batch_mohus = outputs
+        img_shape = img_metas[0][0]['img_shape']
+        kps = kp_delta2bbox(batch_dets[:, :, :4][0], batch_kps[0], [0., 0.],
+                                   [0.05, 0.05], img_shape)
         img_metas = img_metas[0]
-        results = []
+        # results = []
         rescale = kwargs.get('rescale', True)
-        for i in range(batch_size):
-            dets, labels = batch_dets[i], batch_labels[i]
-            if rescale:
-                scale_factor = img_metas[i]['scale_factor']
+        dets, labels, zitais, mohus = batch_dets[0], batch_labels[0], batch_zitais[0], batch_mohus[0]
+        #边界溢出
+        dets[:,[0,2]] = dets[:,[0,2]].clamp(min=1, max=img_shape[1])
+        dets[:,[1,3]] = dets[:,[1,3]].clamp(min=1, max=img_shape[0])
+        if rescale:
+            scale_factor = img_metas[0]['scale_factor']
+            if isinstance(scale_factor, (list, tuple, np.ndarray)):
+                assert len(scale_factor) == 4
+                scale_factor = np.array(scale_factor)[None, :]  # [1,4]
+            scale_factor = torch.from_numpy(scale_factor).to(dets)
+            dets[:, :4] /= scale_factor
+            kps = kps.view(-1, 5, 2)
+            kps = kps/scale_factor.view(-1)[:2]
+        if 'border' in img_metas[0]:
+            # offset pixel of the top-left corners between original image
+            # and padded/enlarged image, 'border' is used when exporting
+            # CornerNet and CentripetalNet to onnx
+            x_off = img_metas[0]['border'][2]
+            y_off = img_metas[0]['border'][0]
+            dets[:, [0, 2]] -= x_off
+            dets[:, [1, 3]] -= y_off
+            dets[:, :4] *= (dets[:, :4] > 0)
+        true_index = labels >= 0
+        dets = dets[true_index]
+        labels = labels[true_index]
+        kps = kps[true_index]
+        zitais = zitais[true_index]
+        mohus = mohus[true_index]
+        return dets.cpu().numpy(), labels.cpu().numpy(), kps.cpu().numpy(), zitais.cpu().numpy(), mohus.cpu().numpy()
+            # dets_results = bbox2result(dets, labels, len(self.CLASSES))
 
-                if isinstance(scale_factor, (list, tuple, np.ndarray)):
-                    assert len(scale_factor) == 4
-                    scale_factor = np.array(scale_factor)[None, :]  # [1,4]
-                scale_factor = torch.from_numpy(scale_factor).to(dets)
-                dets[:, :4] /= scale_factor
-
-            if 'border' in img_metas[i]:
-                # offset pixel of the top-left corners between original image
-                # and padded/enlarged image, 'border' is used when exporting
-                # CornerNet and CentripetalNet to onnx
-                x_off = img_metas[i]['border'][2]
-                y_off = img_metas[i]['border'][0]
-                dets[:, [0, 2]] -= x_off
-                dets[:, [1, 3]] -= y_off
-                dets[:, :4] *= (dets[:, :4] > 0)
-
-            dets_results = bbox2result(dets, labels, len(self.CLASSES))
-
-            if batch_masks is not None:
-                masks = batch_masks[i]
-                img_h, img_w = img_metas[i]['img_shape'][:2]
-                ori_h, ori_w = img_metas[i]['ori_shape'][:2]
-                export_postprocess_mask = True
-                if self.deploy_cfg is not None:
-
-                    mmdet_deploy_cfg = get_post_processing_params(
-                        self.deploy_cfg)
-                    # this flag enable postprocess when export.
-                    export_postprocess_mask = mmdet_deploy_cfg.get(
-                        'export_postprocess_mask', True)
-                if not export_postprocess_mask:
-                    masks = End2EndModel.postprocessing_masks(
-                        dets[:, :4], masks, ori_w, ori_h, self.device)
-                else:
-                    masks = masks[:, :img_h, :img_w]
-                # avoid to resize masks with zero dim
-                if rescale and masks.shape[0] != 0:
-                    masks = torch.nn.functional.interpolate(
-                        masks.unsqueeze(0), size=(ori_h, ori_w))
-                    masks = masks.squeeze(0)
-                if masks.dtype != bool:
-                    masks = masks >= 0.5
-                # aligned with mmdet to easily convert to numpy
-                masks = masks.cpu()
-                segms_results = [[] for _ in range(len(self.CLASSES))]
-                for j in range(len(dets)):
-                    segms_results[labels[j]].append(masks[j])
-                results.append((dets_results, segms_results))
-            else:
-                results.append(dets_results)
+            # if batch_masks is not None:
+            #     masks = batch_masks[i]
+            #     img_h, img_w = img_metas[i]['img_shape'][:2]
+            #     ori_h, ori_w = img_metas[i]['ori_shape'][:2]
+            #     export_postprocess_mask = True
+            #     if self.deploy_cfg is not None:
+            #
+            #         mmdet_deploy_cfg = get_post_processing_params(
+            #             self.deploy_cfg)
+            #         # this flag enable postprocess when export.
+            #         export_postprocess_mask = mmdet_deploy_cfg.get(
+            #             'export_postprocess_mask', True)
+            #     if not export_postprocess_mask:
+            #         masks = End2EndModel.postprocessing_masks(
+            #             dets[:, :4], masks, ori_w, ori_h, self.device)
+            #     else:
+            #         masks = masks[:, :img_h, :img_w]
+            #     # avoid to resize masks with zero dim
+            #     if rescale and masks.shape[0] != 0:
+            #         masks = torch.nn.functional.interpolate(
+            #             masks.unsqueeze(0), size=(ori_h, ori_w))
+            #         masks = masks.squeeze(0)
+            #     if masks.dtype != bool:
+            #         masks = masks >= 0.5
+            #     # aligned with mmdet to easily convert to numpy
+            #     masks = masks.cpu()
+            #     segms_results = [[] for _ in range(len(self.CLASSES))]
+            #     for j in range(len(dets)):
+            #         segms_results[labels[j]].append(masks[j])
+            #     results.append((dets_results, segms_results))
+            # else:
+            #     results.append(dets_results)
         return results
 
     def forward_test(self, imgs: torch.Tensor, *args, **kwargs) -> \

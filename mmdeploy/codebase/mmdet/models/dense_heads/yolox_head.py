@@ -5,6 +5,70 @@ from mmdeploy.codebase.mmdet.core.post_processing import multiclass_nms
 from mmdeploy.codebase.mmdet.deploy import get_post_processing_params
 from mmdeploy.core import FUNCTION_REWRITER, mark
 
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.get_kps')
+@mark('get_kps', inputs=['facekp_preds', 'keep'], outputs=['facekps'])
+def get_kps(ctx, self, facekp_preds, keep):
+    # @mark('yolo_head', inputs=['facekp_preds'])
+    # def __mark_pred_maps(cls_scores, bbox_preds, objectnesses):
+    #     return cls_scores, bbox_preds, objectnesses
+    flatten_facekp_preds = [
+        facekp_pred.permute(0, 2, 3, 1).reshape(1, -1, 10)
+        for facekp_pred in facekp_preds
+    ]
+    flatten_facekp_preds = torch.cat(flatten_facekp_preds, dim=1)
+    facekps = flatten_facekp_preds[0][keep]
+    return facekps
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.get_facezitai')
+def get_facezitai(ctx, self, facezitai_scores, keep):
+    # flatten cls_scores, bbox_preds and objectness
+    flatten_facezitai_scores = [
+        facezitai_score.permute(0, 2, 3, 1).reshape(1, -1, facezitai_score.shape[1])
+        for facezitai_score in facezitai_scores
+    ]
+    flatten_facezitai_scores = torch.cat(flatten_facezitai_scores, dim=1)
+    facezitai_scores = flatten_facezitai_scores[0]
+    facezitai_scores = facezitai_scores[keep]
+    max_scores, labels = torch.max(facezitai_scores, 2)
+    return labels
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.get_facemohu')
+def get_facemohu(ctx, self, facemohu_scores, keep):
+    # flatten cls_scores, bbox_preds and objectness
+    flatten_facemohu_scores = [
+        facemohu_score.permute(0, 2, 3, 1).reshape(1, -1, facemohu_score.shape[1])
+        for facemohu_score in facemohu_scores
+    ]
+    flatten_facemohu_scores = torch.cat(flatten_facemohu_scores, dim=1)
+    facemohu_scores = flatten_facemohu_scores[0]
+    facemohu_scores = facemohu_scores[keep]
+    return facemohu_scores
+
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.simple_test_kps')
+def simple_test_kps(ctx, self, feats, keep):
+    # kp = torch.rand([0, 5, 2]).type_as(keep)
+    outs = self.forward_facekp(feats)
+    kp = self.get_kps(*outs, keep)
+    return kp
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.simple_test_facezitai')
+def simple_test_facezitai(ctx, self, feats, keep):
+    outs = self.forward_facezitai_intest(feats)[0]
+    results = self.get_facezitai(outs, keep)
+    return results
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.simple_test_facemohu')
+def simple_test_facemohu(ctx, self, feats, keep):
+    outs = self.forward_facemohu(feats)[0]
+    results = self.get_facemohu(outs, keep)
+    return results
 
 @FUNCTION_REWRITER.register_rewriter(
     func_name='mmdet.models.YOLOXHead.get_bboxes')
@@ -16,7 +80,8 @@ def yolox_head__get_bboxes(ctx,
                            img_metas=None,
                            cfg=None,
                            rescale=False,
-                           with_nms=True):
+                           with_nms=True,
+                           getKeep=False):
     """Rewrite `get_bboxes` of `YOLOXHead` for default backend.
 
     Rewrite this function to deploy model, transform network output for a
@@ -85,7 +150,6 @@ def yolox_head__get_bboxes(ctx,
     bboxes = self._bbox_decode(flatten_priors, flatten_bbox_preds)
     # directly multiply score factor and feed to nms
     scores = cls_scores * (score_factor.unsqueeze(-1))
-
     if not with_nms:
         return bboxes, scores
 
@@ -96,9 +160,10 @@ def yolox_head__get_bboxes(ctx,
     score_threshold = cfg.get('score_thr', post_params.score_threshold)
     pre_top_k = post_params.pre_top_k
     keep_top_k = cfg.get('max_per_img', post_params.keep_top_k)
-    return multiclass_nms(bboxes, scores, max_output_boxes_per_class,
+    dets, labels, keep = multiclass_nms(bboxes, scores, max_output_boxes_per_class,
                           iou_threshold, score_threshold, pre_top_k,
                           keep_top_k)
+    return dets, labels, keep
 
 
 @FUNCTION_REWRITER.register_rewriter(

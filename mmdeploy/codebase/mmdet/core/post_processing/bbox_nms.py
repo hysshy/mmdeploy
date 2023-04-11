@@ -104,11 +104,13 @@ def _multiclass_nms(boxes: Tensor,
     selected_indices = ONNXNMSop.apply(boxes, scores,
                                        max_output_boxes_per_class,
                                        iou_threshold, score_threshold)
+    keep = selected_indices[:,2].view(1,-1)
+    keep = torch.cat((keep, keep.new_zeros((1, 1))), 1)
 
     dets, labels = select_nms_index(
         scores, boxes, selected_indices, batch_size, keep_top_k=keep_top_k)
 
-    return dets, labels
+    return dets, labels, keep
 
 
 def _multiclass_nms_single(boxes: Tensor,
@@ -140,15 +142,15 @@ def _multiclass_nms_single(boxes: Tensor,
 
     cls_inds = selected_indices[:, 1]
     box_inds = selected_indices[:, 2]
-
+    keep = topk_inds[box_inds]
     scores = scores[:, cls_inds, box_inds].unsqueeze(2)
     boxes = boxes[:, box_inds, ...]
     dets = torch.cat([boxes, scores], dim=2)
     labels = cls_inds.unsqueeze(0)
 
-    # pad
-    dets = torch.cat((dets, dets.new_zeros((1, 1, 5))), 1)
-    labels = torch.cat((labels, labels.new_zeros((1, 1))), 1)
+    # # pad
+    # dets = torch.cat((dets, dets.new_zeros((1, 1, 5))), 1)
+    # labels = torch.cat((labels, labels.new_zeros((1, 1))), 1)
 
     # topk or sort
     is_use_topk = keep_top_k > 0 and \
@@ -157,11 +159,12 @@ def _multiclass_nms_single(boxes: Tensor,
         _, topk_inds = dets[:, :, -1].topk(keep_top_k, dim=1)
     else:
         _, topk_inds = dets[:, :, -1].sort(dim=1, descending=True)
+    keep = keep[topk_inds]
     topk_inds = topk_inds.squeeze(0)
     dets = dets[:, topk_inds, ...]
     labels = labels[:, topk_inds, ...]
 
-    return dets, labels
+    return dets, labels, keep
 
 
 @FUNCTION_REWRITER.register_rewriter(
@@ -255,12 +258,20 @@ def multiclass_nms_static(ctx,
         tuple[Tensor, Tensor]: (dets, labels), `dets` of shape [N, num_det, 5]
             and `labels` of shape [N, num_det].
     """
+    return _multiclass_nms_single(
+        boxes,
+        scores,
+        max_output_boxes_per_class=max_output_boxes_per_class,
+        iou_threshold=iou_threshold,
+        score_threshold=score_threshold,
+        pre_top_k=pre_top_k,
+        keep_top_k=keep_top_k)
     boxes = boxes if boxes.dim() == 4 else boxes.unsqueeze(2)
     keep_top_k = max_output_boxes_per_class if keep_top_k < 0 else min(
         max_output_boxes_per_class, keep_top_k)
-    dets, labels = TRTBatchedNMSop.apply(boxes, scores, int(scores.shape[-1]),
+    dets, labels, keep = TRTBatchedNMSop.apply(boxes, scores, int(scores.shape[-1]),
                                          pre_top_k, keep_top_k, iou_threshold,
-                                         score_threshold, -1)
+                                         score_threshold, -1, True)
 
     # retain shape info
     batch_size = boxes.size(0)
@@ -269,10 +280,10 @@ def multiclass_nms_static(ctx,
     label_shape = labels.shape
     dets = dets.reshape([batch_size, *dets_shape[1:]])
     labels = labels.reshape([batch_size, *label_shape[1:]])
-    return dets, labels
+    return dets, labels, keep
 
 
-@mark('multiclass_nms', inputs=['boxes', 'scores'], outputs=['dets', 'labels'])
+@mark('multiclass_nms', inputs=['boxes', 'scores'], outputs=['dets', 'labels', 'keep'])
 def multiclass_nms(*args, **kwargs):
     """Wrapper function for `_multiclass_nms`."""
     return _multiclass_nms(*args, **kwargs)

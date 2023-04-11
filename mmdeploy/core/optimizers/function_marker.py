@@ -153,6 +153,8 @@ def mark_tensors(xs: Any, func: str, func_id: int, io_type: str, ctx: Any,
         if isinstance(ys, torch.Tensor):
             if ys not in visit:
                 visit.add(ys)
+                print(ctx.names)
+                print(ctx.index)
                 root = ctx.names[ctx.index]
                 name = '.'.join(str(x) for x in (root, *prefix))
                 ys_shape = tuple(int(s) for s in ys.shape)

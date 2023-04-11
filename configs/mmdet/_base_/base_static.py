@@ -1,6 +1,6 @@
 _base_ = ['../../_base_/onnx_config.py']
 
-onnx_config = dict(output_names=['dets', 'labels'], input_shape=None)
+onnx_config = dict(output_names=['dets', 'labels', 'face_kps', 'face_zitais', 'face_mohus'], input_shape=None)
 codebase_config = dict(
     type='mmdet',
     task='ObjectDetection',
