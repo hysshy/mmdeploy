@@ -21,17 +21,17 @@ def get_kps(ctx, self, facekp_preds, keep):
     return facekps
 
 @FUNCTION_REWRITER.register_rewriter(
-    func_name='mmdet.models.YOLOXHead.get_facezitai')
-def get_facezitai(ctx, self, facezitai_scores, keep):
+    func_name='mmdet.models.YOLOXHead.get_cls')
+def get_cls(ctx, self, scores, keep):
     # flatten cls_scores, bbox_preds and objectness
-    flatten_facezitai_scores = [
-        facezitai_score.permute(0, 2, 3, 1).reshape(1, -1, facezitai_score.shape[1])
-        for facezitai_score in facezitai_scores
+    flatten_scores = [
+        score.permute(0, 2, 3, 1).reshape(1, -1, score.shape[1])
+        for score in scores
     ]
-    flatten_facezitai_scores = torch.cat(flatten_facezitai_scores, dim=1)
-    facezitai_scores = flatten_facezitai_scores[0]
-    facezitai_scores = facezitai_scores[keep]
-    max_scores, labels = torch.max(facezitai_scores, 2)
+    flatten_scores = torch.cat(flatten_scores, dim=1)
+    scores = flatten_scores[0]
+    scores = scores[keep]
+    max_scores, labels = torch.max(scores, 2)
     return labels
 
 @FUNCTION_REWRITER.register_rewriter(
@@ -60,7 +60,21 @@ def simple_test_kps(ctx, self, feats, keep):
     func_name='mmdet.models.YOLOXHead.simple_test_facezitai')
 def simple_test_facezitai(ctx, self, feats, keep):
     outs = self.forward_facezitai_intest(feats)[0]
-    results = self.get_facezitai(outs, keep)
+    results = self.get_cls(outs, keep)
+    return results
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.simple_test_clouseStyle')
+def simple_test_clouseStyle(ctx, self, feats, keep):
+    outs = self.forward_clouseStyle_intest(feats)[0]
+    results = self.get_cls(outs, keep)
+    return results
+
+@FUNCTION_REWRITER.register_rewriter(
+    func_name='mmdet.models.YOLOXHead.simple_test_clouseColor')
+def simple_test_clouseColor(ctx, self, feats, keep):
+    outs = self.forward_clouseColor_intest(feats)[0]
+    results = self.get_cls(outs, keep)
     return results
 
 @FUNCTION_REWRITER.register_rewriter(
@@ -131,7 +145,7 @@ def yolox_head__get_bboxes(ctx,
 
     flatten_cls_scores = [
         cls_score.permute(0, 2, 3, 1).reshape(batch_size, -1,
-                                              self.cls_out_channels)
+                                              cls_score.shape[1])
         for cls_score in cls_scores
     ]
     flatten_bbox_preds = [

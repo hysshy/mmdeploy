@@ -228,17 +228,22 @@ class End2EndModel(BaseBackendModel):
         input_img = img[0].contiguous()
         outputs = self.forward_test(input_img, img_metas, *args, **kwargs)
         # outputs = End2EndModel.__clear_outputs(outputs)
-        batch_dets, batch_labels, batch_kps, batch_zitais, batch_mohus = outputs
+        batch_dets, batch_labels, batch_kps, batch_zitais, batch_mohus,\
+        batch_bodybboxes, batch_bodylabels, batch_upclousestyles, batch_clousecolors = outputs
         img_shape = img_metas[0][0]['img_shape']
         kps = kp_delta2bbox(batch_dets[:, :, :4][0], batch_kps[0], [0., 0.],
                                    [0.05, 0.05], img_shape)
         img_metas = img_metas[0]
         # results = []
         rescale = kwargs.get('rescale', True)
-        dets, labels, zitais, mohus = batch_dets[0], batch_labels[0], batch_zitais[0], batch_mohus[0]
+        dets, labels, zitais, mohus, bodybboxes, bodylabels, upclousestyles, clousecolors =\
+            batch_dets[0], batch_labels[0], batch_zitais[0], batch_mohus[0], batch_bodybboxes[0], batch_bodylabels[0],\
+            batch_upclousestyles[0], batch_clousecolors[0]
         #边界溢出
         dets[:,[0,2]] = dets[:,[0,2]].clamp(min=1, max=img_shape[1])
         dets[:,[1,3]] = dets[:,[1,3]].clamp(min=1, max=img_shape[0])
+        bodybboxes[:,[0,2]] = bodybboxes[:,[0,2]].clamp(min=1, max=img_shape[1])
+        bodybboxes[:,[1,3]] = bodybboxes[:,[1,3]].clamp(min=1, max=img_shape[0])
         if rescale:
             scale_factor = img_metas[0]['scale_factor']
             if isinstance(scale_factor, (list, tuple, np.ndarray)):
@@ -246,6 +251,7 @@ class End2EndModel(BaseBackendModel):
                 scale_factor = np.array(scale_factor)[None, :]  # [1,4]
             scale_factor = torch.from_numpy(scale_factor).to(dets)
             dets[:, :4] /= scale_factor
+            bodybboxes[:, :4] /= scale_factor
             kps = kps.view(-1, 5, 2)
             kps = kps/scale_factor.view(-1)[:2]
         if 'border' in img_metas[0]:
@@ -263,7 +269,13 @@ class End2EndModel(BaseBackendModel):
         kps = kps[true_index]
         zitais = zitais[true_index]
         mohus = mohus[true_index]
-        return dets.cpu().numpy(), labels.cpu().numpy(), kps.cpu().numpy(), zitais.cpu().numpy(), mohus.cpu().numpy()
+        body_true_index = bodylabels > 0
+        bodybboxes = bodybboxes[body_true_index]
+        bodylabels = bodylabels[body_true_index]
+        upclousestyles = upclousestyles[body_true_index]
+        clousecolors = clousecolors[body_true_index]
+        return dets.cpu().numpy(), labels.cpu().numpy(), kps.cpu().numpy(), zitais.cpu().numpy(), mohus.cpu().numpy(), \
+               bodybboxes.cpu().numpy(), bodylabels.cpu().numpy(), upclousestyles.cpu().numpy(), clousecolors.cpu().numpy()
             # dets_results = bbox2result(dets, labels, len(self.CLASSES))
 
             # if batch_masks is not None:

@@ -5,7 +5,8 @@ onnx_config = dict(
     opset_version=11,
     save_file='end2end.onnx',
     input_names=['input'],
-    output_names=['dets', 'labels', 'face_kps', 'face_zitais', 'face_mohus'],
+    output_names=['dets', 'labels', 'face_kps', 'face_zitais', 'face_mohus',
+                  'body_bboxes', 'body_labels', 'upclouse_styles', 'clouse_colors'],
     input_shape=None,
     optimize=True,
     dynamic_axes=dict(

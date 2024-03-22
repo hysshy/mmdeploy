@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from mmdeploy.core import FUNCTION_REWRITER, mark
 # from mmdet.models.detectors.labelstransform import simple_test_findTarget
+import torch
 
 @FUNCTION_REWRITER.register_rewriter(
     'mmdet.models.detectors.single_stage_spjgh.SingleStageDetector_SPJGH.simple_test')
@@ -27,6 +28,9 @@ def single_stage_detector_spjgh__simple_test(ctx, self, img, img_metas, rescale=
     feat = self.extract_feat(img)
     dets, labels, keep = self.bbox_head.simple_test(
         feat, img_metas, rescale=rescale, getKeep=True)
+    # index = torch.where((labels >= 0) & (labels <= 1))
+    # face_bboxes = dets[index]
+    # face_labels = labels[index]
     # return dets, labels
     # 人脸关键点识别
     face_kps = self.bbox_head.simple_test_kps(feat,  keep)
@@ -34,5 +38,13 @@ def single_stage_detector_spjgh__simple_test(ctx, self, img, img_metas, rescale=
     face_zitais = self.bbox_head.simple_test_facezitai(feat, keep)
     # 人脸模糊度评估
     face_mohus = self.bbox_head.simple_test_facemohu(feat, keep)
-    return dets, labels, face_kps, face_zitais, face_mohus
+    # 人体部位、属性识别
+    body_bboxes, body_labels, body_keep = self.bbox_head.simple_test_bodybboxes(
+        feat, img_metas, rescale=rescale, getKeep=True)
+    # 衣服风格识别
+    upclouse_styles = self.bbox_head.simple_test_clouseStyle(feat, body_keep)
+    # 衣服颜色识别
+    clouse_colors = self.bbox_head.simple_test_clouseColor(feat, body_keep)
+
+    return dets, labels, face_kps, face_zitais, face_mohus, body_bboxes, body_labels, upclouse_styles, clouse_colors
     # return self.bbox_head.simple_test(feat, img_metas, **kwargs)
