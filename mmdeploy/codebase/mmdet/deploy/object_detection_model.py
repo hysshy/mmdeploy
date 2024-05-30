@@ -230,20 +230,37 @@ class End2EndModel(BaseBackendModel):
         # outputs = End2EndModel.__clear_outputs(outputs)
         batch_dets, batch_labels, batch_kps, batch_zitais, batch_mohus,\
         batch_bodybboxes, batch_bodylabels, batch_upclousestyles, batch_clousecolors = outputs
+        
+        dets, labels, kps, zitais, mohus, bodybboxes, bodylabels, upclousestyles, clousecolors =\
+            batch_dets[0], batch_labels[0], batch_kps[0], batch_zitais[0], batch_mohus[0], batch_bodybboxes[0], batch_bodylabels[0],\
+            batch_upclousestyles[0], batch_clousecolors[0]
+
+        #筛选阈值
+        score_thr = kwargs['score_thr']
+        score_thr2 = kwargs['score_thr2']
+        #score_thr = 0.5
+        valued_index = torch.gt(dets[:,4], score_thr)
+        dets = dets[valued_index]
+        labels = labels[valued_index]
+        kps = kps[valued_index]
+        zitais = zitais[valued_index]
+        mohus = mohus[valued_index]
+        valued_index = torch.gt(bodybboxes[:,4], score_thr2)
+        bodybboxes = bodybboxes[valued_index]
+        bodylabels = bodylabels[valued_index]
+        upclousestyles = upclousestyles[valued_index]
+        clousecolors = clousecolors[valued_index]
+
         img_shape = img_metas[0][0]['img_shape']
-        kps = kp_delta2bbox(batch_dets[:, :, :4][0], batch_kps[0], [0., 0.],
+        kps = kp_delta2bbox(dets[:, :4], kps, [0., 0.],
                                    [0.05, 0.05], img_shape)
         img_metas = img_metas[0]
-        # results = []
-        rescale = kwargs.get('rescale', True)
-        dets, labels, zitais, mohus, bodybboxes, bodylabels, upclousestyles, clousecolors =\
-            batch_dets[0], batch_labels[0], batch_zitais[0], batch_mohus[0], batch_bodybboxes[0], batch_bodylabels[0],\
-            batch_upclousestyles[0], batch_clousecolors[0]
         #边界溢出
         dets[:,[0,2]] = dets[:,[0,2]].clamp(min=1, max=img_shape[1])
         dets[:,[1,3]] = dets[:,[1,3]].clamp(min=1, max=img_shape[0])
         bodybboxes[:,[0,2]] = bodybboxes[:,[0,2]].clamp(min=1, max=img_shape[1])
         bodybboxes[:,[1,3]] = bodybboxes[:,[1,3]].clamp(min=1, max=img_shape[0])
+        rescale = kwargs.get('rescale', True)
         if rescale:
             scale_factor = img_metas[0]['scale_factor']
             if isinstance(scale_factor, (list, tuple, np.ndarray)):
@@ -269,7 +286,7 @@ class End2EndModel(BaseBackendModel):
         kps = kps[true_index]
         zitais = zitais[true_index]
         mohus = mohus[true_index]
-        body_true_index = bodylabels > 0
+        body_true_index = bodylabels >= 0
         bodybboxes = bodybboxes[body_true_index]
         bodylabels = bodylabels[body_true_index]
         upclousestyles = upclousestyles[body_true_index]

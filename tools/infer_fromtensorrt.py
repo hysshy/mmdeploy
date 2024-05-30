@@ -9,6 +9,7 @@ from mmdeploy.utils.config_utils import load_config
 from mmdet.datasets.pipelines import Compose
 from mmdeploy.utils.device import parse_device_id
 from mmdeploy.utils.timer import TimeCounter
+from util import prefactor_fence, drawBboxes, drawFacekps, rectLabels
 import cv2
 import time
 import numpy as np
@@ -18,17 +19,18 @@ def get_test_pipeline(config, ifNdarray=True):
     cfg = Config.fromfile(config)
     cfg = compat_cfg(cfg)
     score_thr = cfg.model.test_cfg.score_thr
-    score_thr = 0.0
+    score_thr2 = cfg.model.test_cfg.score_thr2
     if ifNdarray:
         cfg = cfg.copy()
         # set loading pipeline type
         cfg.data.test.pipeline[0].type = 'LoadImageFromWebcam'
     cfg.data.test.pipeline = replace_ImageToTensor(cfg.data.test.pipeline)
     test_pipeline = Compose(cfg.data.test.pipeline)
-    return test_pipeline, score_thr
+    return test_pipeline, score_thr, score_thr2
 
 
-def detect(model, img, score_thr, test_pipeline):
+def detect(model, img, score_thr, score_thr2, test_pipeline):
+    start = time.time()
     if isinstance(img, np.ndarray):
         # directly add img
         data = dict(img=img)
@@ -40,14 +42,16 @@ def detect(model, img, score_thr, test_pipeline):
     # just get the actual data from DataContainer
     data['img_metas'] = [img_metas.data[0] for img_metas in data['img_metas']]
     data['img'] = [img.data[0] for img in data['img']]
-    data.setdefault('mutilTask', True)
+    data.setdefault('mutilTask', False)
     data.setdefault('score_thr', score_thr)
-    start = time.time()
-    det, label, kps, zitais, mohus = model(return_loss=False, rescale=True, **data)
+    data.setdefault('score_thr2', score_thr2)
+    print(data['img_metas'])
+    #start = time.time()
+    det, label, kps, zitais, mohus, body_bboxes, body_labels, upclouse_styles, clouse_colors = model(return_loss=False, rescale=True, **data)
     timecost = time.time() - start
     print(timecost)
     costTime.append(timecost)
-    return det, label, kps, zitais, mohus
+    return det, label, kps, zitais, mohus, body_bboxes, body_labels, upclouse_styles, clouse_colors
 
 def draw_img(img, imgName, det_bboxes, det_labels, kps, zitais, mohus, savePath, categoriesName, zitai_categoriesName):
     if isinstance(img, str):
@@ -76,13 +80,19 @@ def draw_img(img, imgName, det_bboxes, det_labels, kps, zitais, mohus, savePath,
 
 
 if __name__ == '__main__':
-    imgPath = '/home/chase/Desktop/138/images'
-    savePath = '/home/chase/shy/testdata/draw'
+    imgPath = '/home/chase/shy/138/images'
+    savePath = '/home/chase/shy/138/draw'
     categoriesName = ['face','facewithmask','person', 'lianglunche', 'sanlunche', 'car', 'truck', 'dog', 'cat']
     zitai_categoriesName = ['微右', '微左', '正脸', '下左', '下右', '微下', '重上', '重下', '重右', '重左', '遮挡或半脸']
-    deploy_cfg_path = '/home/chase/shy/deploy_config.py'
-    model_cfg_path = '/home/chase/shy/yolox_m_8x8_300e_coco_spjgh.py'
-    model_file = ['/home/chase/shy/mmdeploy/tools/work_dir10/end2end.engine']
+    bodydetector_categoriesName = ['short_sleeves', 'long_sleeves', 'skirt', 'long_trousers', 'short_trousers', 'backbag',
+                               'glasses', 'handbag', 'hat', 'haversack', 'trunk']
+    clousestyle_categoriesName = ['medium_long_style', 'medium_style', 'long_style']
+    clousecolor_categoriesName = ['light_blue', 'light_red', 'khaki', 'gray', 'blue', 'red', 'green', 'brown', 'yellow',
+                              'purple', 'white', 'orange', 'deep_blue', 'deep_green', 'deep_red', 'black', 'stripe',
+                              'lattice', 'mess', 'decor', 'blue_green']
+    deploy_cfg_path = '/chase/mmdeploy/testconfig/deploy_config.py'
+    model_cfg_path = '/home/chase/shy/dataset/spjgh/models/yolox_l_8x8_300e_coco_spjgh.py'
+    model_file = ['/chase/mmdeploy/test2/end2end.engine']
 
     # load deploy_cfg
     deploy_cfg, model_cfg = load_config(deploy_cfg_path, model_cfg_path)
@@ -94,19 +104,51 @@ if __name__ == '__main__':
     model = MMDataParallel(model, device_ids=[0])
     if hasattr(model.module, 'CLASSES'):
         model.CLASSES = model.module.CLASSES
-    test_pipeline, score_thr = get_test_pipeline(model_cfg_path, ifNdarray=True)
+    test_pipeline, score_thr, score_thr2 = get_test_pipeline(model_cfg_path, ifNdarray=True)
     i = 0
+    costtime2 = []
     for imgName in os.listdir(imgPath):
         print(imgName)
         img = cv2.imread(imgPath+'/'+imgName)
-        det, label, kps, zitais, mohus = detect(model, img, score_thr, test_pipeline)
-        draw_img(img, imgName, det, label, kps, zitais, mohus, savePath, categoriesName, zitai_categoriesName)
+        start=time.time()
+        det, label, kps, zitais, mohus, body_bboxes, body_labels, upclouse_styles, clouse_colors = detect(model, img, score_thr, score_thr2, test_pipeline)
+        car_bboxes, car_labels, pet_bboxes, pet_labels, person_bboxes, person_labels, upclouse_bboxes_list, upclouse_labels_list, upclouse_colors_list, upclouse_styles_list,\
+           downclouse_bboxes_list, downclouse_labels_list, downclouse_colors_list, otherfactor_bboxes_list, otherfactor_labels_list, face_bboxes_list, face_labels_list, face_bboxes,\
+           face_labels, face_kps, face_zitais, face_mohus, facefactor_bboxes_list_all, facefactor_labels_list_all = prefactor_fence(det, label, kps, zitais, mohus, body_bboxes, body_labels, upclouse_styles, clouse_colors, None)
+        costtime2.append(time.time()-start)
+        drawBboxes(img, car_bboxes, car_labels, categoriesName)
+        drawBboxes(img, pet_bboxes, pet_labels, categoriesName)
+        drawBboxes(img, person_bboxes, person_labels, categoriesName)
+        drawBboxes(img, face_bboxes, face_labels, categoriesName)
+        drawFacekps(img, face_kps)
+        rectLabels(img, face_bboxes, face_zitais, zitai_categoriesName, savePath, imgName)
+        rectLabels(img, face_bboxes, face_mohus, zitai_categoriesName, savePath, imgName, type='mohu')
+        #drawBboxes(img, body_bboxes, body_labels, bodydetector_categoriesName)
+        for i in range(len(upclouse_bboxes_list)):
+            drawBboxes(img, upclouse_bboxes_list[i], upclouse_labels_list[i], bodydetector_categoriesName)
+        for i in range(len(downclouse_bboxes_list)):
+            drawBboxes(img, downclouse_bboxes_list[i], downclouse_labels_list[i], bodydetector_categoriesName)
+        for i in range(len(otherfactor_bboxes_list)):
+            drawBboxes(img, otherfactor_bboxes_list[i], otherfactor_labels_list[i], bodydetector_categoriesName)
+        for i in range(len(upclouse_bboxes_list)):
+            rectLabels(img, upclouse_bboxes_list[i], upclouse_colors_list[i], clousecolor_categoriesName, savePath, imgName)
+            rectLabels(img, upclouse_bboxes_list[i], upclouse_styles_list[i], clousestyle_categoriesName, savePath, imgName)
+        for i in range(len(downclouse_bboxes_list)):
+            rectLabels(img, downclouse_bboxes_list[i], downclouse_colors_list[i], clousecolor_categoriesName, savePath, imgName)
+
+        cv2.imwrite(savePath+'/'+imgName, img)
+
+
+
+
+        #draw_img(img, imgName, det, label, kps, zitais, mohus, savePath, categoriesName, zitai_categoriesName)
         i += 1
         if i == 100:
             break
     costTime.pop(0)
-    print(costTime)
+    costtime2.pop(0)
     print(np.mean(costTime))
+    print(np.mean(costtime2))
     # samples_per_gpu = 1
     # model = ONNXRuntimeDetector(
     #     model, class_names=('luomu', 'back'), device_id=0)

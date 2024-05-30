@@ -1,6 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from mmdeploy.core import FUNCTION_REWRITER, mark
-# from mmdet.models.detectors.labelstransform import simple_test_findTarget
+from mmdet.models.detectors.labelstransform import simple_test_findTarget
 import torch
 
 @FUNCTION_REWRITER.register_rewriter(
@@ -28,10 +28,6 @@ def single_stage_detector_spjgh__simple_test(ctx, self, img, img_metas, rescale=
     feat = self.extract_feat(img)
     dets, labels, keep = self.bbox_head.simple_test(
         feat, img_metas, rescale=rescale, getKeep=True)
-    # index = torch.where((labels >= 0) & (labels <= 1))
-    # face_bboxes = dets[index]
-    # face_labels = labels[index]
-    # return dets, labels
     # 人脸关键点识别
     face_kps = self.bbox_head.simple_test_kps(feat,  keep)
     # 人脸姿态分类
